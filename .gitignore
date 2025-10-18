@@ -1,0 +1,25 @@
+*.o
+*.kpm
+
+# CMake build directories
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+_deps/
+compile_commands.json
+
+# KernelPatch source (auto-downloaded)
+third_party/
+
+# User configuration
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
