@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
-project(KPM-Build-Anywhere NONE)
+project(KPM-Build-Anywhere C)
+
+# Option to configure project for IDE IntelliSense only (skips NDK/toolchain checks)
+option(KPM_IDE_ONLY "Configure for IntelliSense only; skip NDK/toolchain checks and custom build steps" OFF)
 
 # Enable compile commands for IDEs (CLion, VS Code, etc.)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -82,50 +85,54 @@ function(find_ndk_path OUTPUT_VAR)
 endfunction()
 
 # ==============================================================================
-# NDK Configuration
+# NDK Configuration (skipped in IDE-only mode)
 # ==============================================================================
-if(DEFINED ENV{NDK_PATH})
-    set(NDK_PATH $ENV{NDK_PATH})
-    message(STATUS "Using NDK_PATH from environment: ${NDK_PATH}")
-else()
-    message(STATUS "NDK_PATH not set, searching for NDK automatically...")
-    find_ndk_path(NDK_PATH)
-    if(NOT NDK_PATH)
-        message(FATAL_ERROR 
-            "Could not find NDK automatically. Please set NDK_PATH environment variable:\n"
-            "  export NDK_PATH=/path/to/ndk\n"
-            "Or download NDK from: https://developer.android.com/ndk/downloads"
-        )
-    endif()
-endif()
-
-# For macOS, detect which platform directory actually exists in NDK
-if(APPLE AND DEFINED FALLBACK_PLATFORM)
-    set(PREBUILT_PATH "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}")
-    if(NOT EXISTS "${PREBUILT_PATH}")
-        message(STATUS "Platform ${PLATFORM} not found in NDK, trying ${FALLBACK_PLATFORM}")
-        set(PLATFORM ${FALLBACK_PLATFORM})
-        set(PREBUILT_PATH "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}")
-        if(NOT EXISTS "${PREBUILT_PATH}")
-            message(FATAL_ERROR "NDK toolchain not found at: ${PREBUILT_PATH}")
+if(NOT KPM_IDE_ONLY)
+    if(DEFINED ENV{NDK_PATH})
+        set(NDK_PATH $ENV{NDK_PATH})
+        message(STATUS "Using NDK_PATH from environment: ${NDK_PATH}")
+    else()
+        message(STATUS "NDK_PATH not set, searching for NDK automatically...")
+        find_ndk_path(NDK_PATH)
+        if(NOT NDK_PATH)
+            message(FATAL_ERROR 
+                "Could not find NDK automatically. Please set NDK_PATH environment variable:\n"
+                "  export NDK_PATH=/path/to/ndk\n"
+                "Or download NDK from: https://developer.android.com/ndk/downloads"
+            )
         endif()
     endif()
+
+    # For macOS, detect which platform directory actually exists in NDK
+    if(APPLE AND DEFINED FALLBACK_PLATFORM)
+        set(PREBUILT_PATH "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}")
+        if(NOT EXISTS "${PREBUILT_PATH}")
+            message(STATUS "Platform ${PLATFORM} not found in NDK, trying ${FALLBACK_PLATFORM}")
+            set(PLATFORM ${FALLBACK_PLATFORM})
+            set(PREBUILT_PATH "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}")
+            if(NOT EXISTS "${PREBUILT_PATH}")
+                message(FATAL_ERROR "NDK toolchain not found at: ${PREBUILT_PATH}")
+            endif()
+        endif()
+    endif()
+
+    set(TOOLCHAIN_PREFIX "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}/bin/")
+
+    # Set tools
+    set(CC "${TOOLCHAIN_PREFIX}aarch64-linux-android31-clang")
+    set(LD "${TOOLCHAIN_PREFIX}ld.lld")
+    set(STRIP_TOOL "${TOOLCHAIN_PREFIX}llvm-strip")
+
+    # Verify tools exist
+    if(NOT EXISTS "${CC}")
+        message(FATAL_ERROR "NDK compiler not found: ${CC}\nPlease check your NDK installation.")
+    endif()
+
+    message(STATUS "Using platform: ${PLATFORM}")
+    message(STATUS "Using NDK toolchain: ${TOOLCHAIN_PREFIX}")
+else()
+    message(STATUS "KPM_IDE_ONLY=ON: Skipping NDK/toolchain checks; configuring IntelliSense targets only.")
 endif()
-
-set(TOOLCHAIN_PREFIX "${NDK_PATH}/toolchains/llvm/prebuilt/${PLATFORM}/bin/")
-
-# Set tools
-set(CC "${TOOLCHAIN_PREFIX}aarch64-linux-android31-clang")
-set(LD "${TOOLCHAIN_PREFIX}ld.lld")
-set(STRIP_TOOL "${TOOLCHAIN_PREFIX}llvm-strip")
-
-# Verify tools exist
-if(NOT EXISTS "${CC}")
-    message(FATAL_ERROR "NDK compiler not found: ${CC}\nPlease check your NDK installation.")
-endif()
-
-message(STATUS "Using platform: ${PLATFORM}")
-message(STATUS "Using NDK toolchain: ${TOOLCHAIN_PREFIX}")
 
 # ==============================================================================
 # KernelPatch Source Configuration
@@ -186,6 +193,16 @@ foreach(dir ${INCLUDE_DIRS})
     list(APPEND INCLUDE_FLAGS "-I${KP_DIR}/kernel/${dir}")
 endforeach()
 
+# Full include directory list for IDEs
+set(FULL_INCLUDE_DIRS "")
+foreach(dir ${INCLUDE_DIRS})
+    list(APPEND FULL_INCLUDE_DIRS "${KP_DIR}/kernel/${dir}")
+endforeach()
+
+# Use a known C standard for parsing by IDEs
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
 # Compiler flags
 set(CFLAGS
     ${INCLUDE_FLAGS}
@@ -210,6 +227,7 @@ set(CFLAGS
 file(GLOB MODULE_DIRS LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/modules/*")
 
 set(ALL_MODULES "")
+set(MODULE_SOURCES "")
 
 foreach(MODULE_DIR ${MODULE_DIRS})
     if(IS_DIRECTORY "${MODULE_DIR}")
@@ -224,6 +242,14 @@ foreach(MODULE_DIR ${MODULE_DIRS})
         set(MODULE_SOURCE "${MODULE_DIR}/module.c")
         if(NOT EXISTS "${MODULE_SOURCE}")
             message(WARNING "Module ${MODULE_NAME}: module.c not found, skipping")
+            continue()
+        endif()
+
+        # Collect sources for IDE IntelliSense
+        list(APPEND MODULE_SOURCES "${MODULE_SOURCE}")
+
+        if(KPM_IDE_ONLY)
+            message(STATUS "IDE-only: discovered module source ${MODULE_SOURCE}")
             continue()
         endif()
         
@@ -272,15 +298,25 @@ foreach(MODULE_DIR ${MODULE_DIRS})
     endif()
 endforeach()
 
-# Create 'all-modules' target to build all modules
-if(ALL_MODULES)
-    add_custom_target(all-modules ALL)
-    add_dependencies(all-modules ${ALL_MODULES})
-    list(LENGTH ALL_MODULES MODULE_COUNT)
-    message(STATUS "Total modules found: ${MODULE_COUNT}")
-    message(STATUS "Build targets: ${ALL_MODULES}")
-else()
-    message(WARNING "No modules found in modules/ directory")
+# Configure a dummy static library to expose compile options for IDEs
+if(MODULE_SOURCES)
+    add_library(kpm_intellisense STATIC EXCLUDE_FROM_ALL ${MODULE_SOURCES})
+    target_include_directories(kpm_intellisense PRIVATE ${FULL_INCLUDE_DIRS})
+    target_compile_options(kpm_intellisense PRIVATE -Wall)
+    message(STATUS "Configured IntelliSense target: kpm_intellisense")
+endif()
+
+# Create 'all-modules' target to build all modules (skip in IDE-only mode)
+if(NOT KPM_IDE_ONLY)
+    if(ALL_MODULES)
+        add_custom_target(all-modules ALL)
+        add_dependencies(all-modules ${ALL_MODULES})
+        list(LENGTH ALL_MODULES MODULE_COUNT)
+        message(STATUS "Total modules found: ${MODULE_COUNT}")
+        message(STATUS "Build targets: ${ALL_MODULES}")
+    else()
+        message(WARNING "No modules found in modules/ directory")
+    endif()
 endif()
 
 # ==============================================================================
