@@ -180,12 +180,12 @@ message(STATUS "KernelPatch directory: ${KP_DIR}")
 
 # Include directories from KernelPatch
 set(INCLUDE_DIRS
-    .
-    include
-    patch/include
-    linux/include
-    linux/arch/arm64/include
-    linux/tools/arch/arm64/include
+        .
+        include
+        patch/include
+        linux/include
+        linux/arch/arm64/include
+        linux/tools/arch/arm64/include
 )
 
 set(INCLUDE_FLAGS "")
@@ -199,24 +199,37 @@ foreach(dir ${INCLUDE_DIRS})
     list(APPEND FULL_INCLUDE_DIRS "${KP_DIR}/kernel/${dir}")
 endforeach()
 
+# 添加内核编译定义
+set(KERNEL_DEFINITIONS
+        -D__KERNEL__
+        -D__LINUX__
+        -D__USE_MISC
+        -D_GNU_SOURCE
+        -D__LINUX_ARM_ARCH__=8
+        -D__aarch64__
+)
+
 # Use a known C standard for parsing by IDEs
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Compiler flags
 set(CFLAGS
-    ${INCLUDE_FLAGS}
-    -Wall
-    -Ofast
-    -fno-PIC
-    -fno-asynchronous-unwind-tables
-    -fno-stack-protector
-    -fno-unwind-tables
-    -fno-semantic-interposition
-    -U_FORTIFY_SOURCE
-    -fno-common
-    -fvisibility=hidden
-    -O2
+        ${INCLUDE_FLAGS}
+        ${KERNEL_DEFINITIONS}
+        -Wall
+        -Ofast
+        -fno-PIC
+        -fno-asynchronous-unwind-tables
+        -fno-stack-protector
+        -fno-unwind-tables
+        -fno-semantic-interposition
+        -U_FORTIFY_SOURCE
+        -fno-common
+        -fvisibility=hidden
+        -O2
+        -nostdinc
+        -ffreestanding
 )
 
 # ==============================================================================
@@ -232,27 +245,34 @@ set(MODULE_SOURCES "")
 foreach(MODULE_DIR ${MODULE_DIRS})
     if(IS_DIRECTORY "${MODULE_DIR}")
         get_filename_component(MODULE_NAME "${MODULE_DIR}" NAME)
-        
+
         # Skip template directory
         if(MODULE_NAME STREQUAL "template")
             continue()
         endif()
-        
-        # Check if module.c exists
-        set(MODULE_SOURCE "${MODULE_DIR}/module.c")
-        if(NOT EXISTS "${MODULE_SOURCE}")
-            message(WARNING "Module ${MODULE_NAME}: module.c not found, skipping")
+
+        # Recursively find all .c files in module directory
+        file(GLOB_RECURSE MODULE_SOURCES
+                "${MODULE_DIR}/*.c"
+        )
+
+        # Filter out any unwanted files if needed
+        list(FILTER MODULE_SOURCES EXCLUDE REGEX ".*/test/.*")
+        list(FILTER MODULE_SOURCES EXCLUDE REGEX ".*/debug/.*")
+
+        if(NOT MODULE_SOURCES)
+            message(WARNING "Module ${MODULE_NAME}: no .c files found, skipping")
             continue()
         endif()
 
         # Collect sources for IDE IntelliSense
-        list(APPEND MODULE_SOURCES "${MODULE_SOURCE}")
+        list(APPEND ALL_MODULE_SOURCES ${MODULE_SOURCES})
 
         if(KPM_IDE_ONLY)
-            message(STATUS "IDE-only: discovered module source ${MODULE_SOURCE}")
+            message(STATUS "IDE-only: discovered module sources for ${MODULE_NAME}: ${MODULE_SOURCES}")
             continue()
         endif()
-        
+
         # Check for custom linker script
         set(MODULE_LDS "${MODULE_DIR}/module.lds")
         if(EXISTS "${MODULE_LDS}")
@@ -260,41 +280,52 @@ foreach(MODULE_DIR ${MODULE_DIRS})
         else()
             set(MODULE_CFLAGS ${CFLAGS})
         endif()
-        
-        # Output paths
-        set(MODULE_OBJ "${CMAKE_BINARY_DIR}/${MODULE_NAME}/${MODULE_NAME}.o")
+
+        # Create object file list
+        set(MODULE_OBJS "")
+        foreach(source_file ${MODULE_SOURCES})
+            # Get relative path for output naming
+            file(RELATIVE_PATH rel_path "${MODULE_DIR}" "${source_file}")
+            # Replace path separators and extension
+            string(REPLACE "/" "_" obj_name "${rel_path}")
+            string(REPLACE ".c" ".o" obj_name "${obj_name}")
+            set(obj_path "${CMAKE_BINARY_DIR}/${MODULE_NAME}/${obj_name}")
+            list(APPEND MODULE_OBJS "${obj_path}")
+
+            # Compile each source file
+            add_custom_command(
+                    OUTPUT ${obj_path}
+                    COMMAND ${CC} ${MODULE_CFLAGS} -c -o ${obj_path} ${source_file}
+                    DEPENDS ${source_file}
+                    COMMENT "Compiling ${rel_path} for module: ${MODULE_NAME}"
+            )
+        endforeach()
+
+        # Output path for final module
         set(MODULE_KPM "${CMAKE_BINARY_DIR}/${MODULE_NAME}/${MODULE_NAME}.kpm")
-        
+
         # Create module output directory
         file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/${MODULE_NAME}")
-        
-        # Compile command
+
+        # Link all object files into final module
         add_custom_command(
-            OUTPUT ${MODULE_OBJ}
-            COMMAND ${CC} ${MODULE_CFLAGS} -c -o ${MODULE_OBJ} ${MODULE_SOURCE}
-            DEPENDS ${MODULE_SOURCE} ${MODULE_LDS}
-            COMMENT "Compiling module: ${MODULE_NAME}"
+                OUTPUT ${MODULE_KPM}
+                COMMAND ${CC} -nostdlib -r -o ${MODULE_KPM} ${MODULE_OBJS}
+                COMMAND ${STRIP_TOOL} -g --strip-unneeded --strip-debug
+                --remove-section=.comment
+                --remove-section=.note.GNU-stack
+                ${MODULE_KPM}
+                DEPENDS ${MODULE_OBJS}
+                COMMENT "Linking KPM: ${MODULE_NAME}.kpm"
+                VERBATIM
         )
-        
-        # Link command
-        add_custom_command(
-            OUTPUT ${MODULE_KPM}
-            COMMAND ${CC} -nostdlib -r -o ${MODULE_KPM} ${MODULE_OBJ}
-            COMMAND ${STRIP_TOOL} -g --strip-unneeded --strip-debug 
-                    --remove-section=.comment 
-                    --remove-section=.note.GNU-stack 
-                    ${MODULE_KPM}
-            DEPENDS ${MODULE_OBJ}
-            COMMENT "Creating KPM: ${MODULE_NAME}.kpm"
-            VERBATIM
-        )
-        
+
         # Create target for this module
         add_custom_target(${MODULE_NAME} DEPENDS ${MODULE_KPM})
-        
+
         list(APPEND ALL_MODULES ${MODULE_NAME})
-        
-        message(STATUS "Found module: ${MODULE_NAME}")
+
+        message(STATUS "Found module: ${MODULE_NAME} with sources: ${MODULE_SOURCES}")
     endif()
 endforeach()
 
