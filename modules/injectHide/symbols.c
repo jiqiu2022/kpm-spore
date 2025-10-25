@@ -12,7 +12,7 @@ void *(*kf_vmalloc)(unsigned long size);
 void (*kf_vfree)(const void *addr);
 
 int init_symbols(void) {
-    struct symbol_entry symbols[] = {
+    static struct symbol_entry symbols[] = {
             {"get_task_mm", (void **)&kf_get_task_mm, "get_task_mm"},
             {"mmput", (void **)&kf_mmput, "mmput"},
             {"show_map_vma", (void **)&ori_show_map_vma, "show_map_vma"},
