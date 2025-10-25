@@ -10,7 +10,7 @@
 #define SEEK_SET 0
 #define SEEK_END 2
 
-#define CONFIG_PATH "/data/adb/modules/zygisk-myinjector/kpm_hide_config.txt"
+#define CONFIG_PATH "/data/local/tmp/kpm_hide_config.txt"
 
 struct config {
     char *keyword;
